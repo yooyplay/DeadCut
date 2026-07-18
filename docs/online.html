@@ -153,7 +153,7 @@
     <p style="font-size:.82rem;color:var(--muted);margin-bottom:8px;">Detection sensitivity:</p>
     <div class="sensitivity-row">
       <label>Less aggressive</label>
-      <input type="range" id="sensitivity" min="1" max="5" value="3" />
+      <input type="range" id="sensitivity" min="1" max="5" value="4" />
       <label>More aggressive</label>
     </div>
     <p style="font-size:.75rem;color:var(--muted);margin-bottom:20px;margin-top:-6px;">
@@ -343,63 +343,77 @@
 
     // Sensitivity → thresholds
     const sens = parseInt(sensitivityEl.value, 10); // 1–5
-    // silence noise floor: -50dB (strict) to -25dB (loose)
-    const silNoise = [-50, -45, -40, -35, -25][sens - 1];
-    // min silence duration: 3s (strict) to 1s (loose)
+    // silence noise floor: -45dB (conservative) to -20dB (aggressive)
+    const silNoise = [-45, -40, -35, -30, -20][sens - 1];
+    // min silence duration: 3s down to 1s
     const silDur   = [3, 2.5, 2, 1.5, 1][sens - 1];
-    // freeze noise: 0.0003 (strict) to 0.002 (loose)
-    const frzNoise = [0.0003, 0.0005, 0.001, 0.0015, 0.002][sens - 1];
+    // freeze noise tolerance
+    const frzNoise = [0.0003, 0.0005, 0.001, 0.002, 0.004][sens - 1];
     // min freeze duration
     const frzDur   = [3, 2.5, 2, 1.5, 1][sens - 1];
 
-    let logs = "";
-    const origLog = ff.setLogger;
-    // Capture ffmpeg stderr
-    ff.setLogger(({ message }) => { logs += message + "\n"; });
+    // Metadata output files (more reliable than parsing stderr in wasm)
+    const silFile = "dc_sil.txt";
+    const frzFile = "dc_frz.txt";
 
     try {
       ff.FS("writeFile", inName, await fetchFile(selectedFile));
       scanBar.style.width = "20%";
+    } catch(e) {
+      state = "error";
+      scanLabel.textContent = "Failed to load file: " + e.message;
+      return;
+    }
 
-      // Run detection pass
+    // Two-pass: silence first, then freeze (avoids filter graph conflicts)
+    scanLabel.textContent = "Detecting silence…";
+    try {
       await ff.run(
         "-i", inName,
-        "-vf", `freezedetect=n=${frzNoise}:d=${frzDur}`,
-        "-af", `silencedetect=noise=${silNoise}dB:d=${silDur}`,
-        "-f", "null", "-"
+        "-af", `silencedetect=noise=${silNoise}dB:d=${silDur},ametadata=mode=print:file=${silFile}`,
+        "-vn", "-f", "null", "-"
       );
+    } catch(e) { /* expected for -f null */ }
 
-      ff.FS("unlink", inName);
-    } catch(e) { /* ffmpeg always "errors" on -f null */ }
+    scanBar.style.width = "55%";
+    scanLabel.textContent = "Detecting frozen frames…";
+    try {
+      await ff.run(
+        "-i", inName,
+        "-vf", `freezedetect=n=${frzNoise}:d=${frzDur},metadata=mode=print:file=${frzFile}`,
+        "-an", "-f", "null", "-"
+      );
+    } catch(e) { /* expected for -f null */ }
+
+    try { ff.FS("unlink", inName); } catch(_) {}
 
     scanBar.style.width = "90%";
     scanLabel.textContent = "Parsing results…";
 
-    // Parse silence segments
+    // Read metadata files written by ffmpeg
+    let silData = "", frzData = "";
+    try { silData = new TextDecoder().decode(ff.FS("readFile", silFile)); ff.FS("unlink", silFile); } catch(_) {}
+    try { frzData  = new TextDecoder().decode(ff.FS("readFile", frzFile));  ff.FS("unlink", frzFile);  } catch(_) {}
+
+    // Parse silence (ametadata keys: lavfi.silence_start / lavfi.silence_end)
     const silSegs = [];
-    const silStartRe = /silence_start: ([\d.]+)/g;
-    const silEndRe   = /silence_end: ([\d.]+)/g;
-    let ms, me;
     const silStarts = [], silEnds = [];
-    while ((ms = silStartRe.exec(logs)) !== null) silStarts.push(parseFloat(ms[1]));
-    while ((me = silEndRe.exec(logs))   !== null) silEnds.push(parseFloat(me[1]));
+    for (const m of silData.matchAll(/lavfi\.silence_start=([\d.]+)/g)) silStarts.push(parseFloat(m[1]));
+    for (const m of silData.matchAll(/lavfi\.silence_end=([\d.]+)/g))   silEnds.push(parseFloat(m[1]));
     for (let i = 0; i < silStarts.length; i++) {
-      silSegs.push({ start: silStarts[i], end: silEnds[i] || 9999, type: "silence" });
+      silSegs.push({ start: silStarts[i], end: silEnds[i] ?? 9999, type: "silence" });
     }
 
-    // Parse freeze segments
+    // Parse freeze (metadata keys: lavfi.freezedetect.freeze_start / freeze_end)
     const frzSegs = [];
-    const frzStartRe = /freeze_start: ([\d.]+)/g;
-    const frzEndRe   = /freeze_end: ([\d.]+)/g;
     const frzStarts = [], frzEnds = [];
-    let fs, fe;
-    while ((fs = frzStartRe.exec(logs)) !== null) frzStarts.push(parseFloat(fs[1]));
-    while ((fe = frzEndRe.exec(logs))   !== null) frzEnds.push(parseFloat(fe[1]));
+    for (const m of frzData.matchAll(/lavfi\.freezedetect\.freeze_start=([\d.]+)/g)) frzStarts.push(parseFloat(m[1]));
+    for (const m of frzData.matchAll(/lavfi\.freezedetect\.freeze_end=([\d.]+)/g))   frzEnds.push(parseFloat(m[1]));
     for (let i = 0; i < frzStarts.length; i++) {
-      frzSegs.push({ start: frzStarts[i], end: frzEnds[i] || 9999, type: "freeze" });
+      frzSegs.push({ start: frzStarts[i], end: frzEnds[i] ?? 9999, type: "freeze" });
     }
 
-    // Merge overlapping segments of the same or adjacent type
+    // Merge overlapping / adjacent segments
     const allSegs = [...silSegs, ...frzSegs].sort((a, b) => a.start - b.start);
     const merged = [];
     for (const seg of allSegs) {
@@ -412,7 +426,7 @@
       }
     }
 
-    detectedSegs = merged.filter(s => s.end - s.start >= silDur);
+    detectedSegs = merged.filter(s => (s.end === 9999 ? 0 : s.end - s.start) >= silDur);
     segEnabled   = detectedSegs.map(() => true);
 
     scanBar.style.width = "100%";
