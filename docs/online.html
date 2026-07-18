@@ -502,6 +502,40 @@
     return "Frozen + silent";
   }
 
+  // ── Thumbnail capture via hidden <video> ─────────────────────
+  let thumbVideo = null;
+  let thumbObjectURL = null;
+  const thumbCache = {};  // start_time -> dataURL
+
+  function captureThumb(timeSeconds) {
+    return new Promise(resolve => {
+      if (thumbCache[timeSeconds]) { resolve(thumbCache[timeSeconds]); return; }
+      if (!thumbVideo) { resolve(null); return; }
+      const onSeeked = () => {
+        thumbVideo.removeEventListener("seeked", onSeeked);
+        const canvas = document.createElement("canvas");
+        canvas.width  = 160;
+        canvas.height = 90;
+        canvas.getContext("2d").drawImage(thumbVideo, 0, 0, 160, 90);
+        const url = canvas.toDataURL("image/jpeg", 0.7);
+        thumbCache[timeSeconds] = url;
+        resolve(url);
+      };
+      thumbVideo.addEventListener("seeked", onSeeked);
+      thumbVideo.currentTime = timeSeconds;
+    });
+  }
+
+  function initThumbVideo() {
+    if (thumbVideo) { thumbVideo.src = ""; }
+    thumbVideo = document.createElement("video");
+    thumbVideo.muted = true;
+    thumbVideo.preload = "metadata";
+    if (thumbObjectURL) URL.revokeObjectURL(thumbObjectURL);
+    thumbObjectURL = URL.createObjectURL(selectedFile);
+    thumbVideo.src = thumbObjectURL;
+  }
+
   function showReview() {
     stepPick.style.display   = "none";
     stepReview.style.display = "block";
@@ -509,18 +543,31 @@
     if (detectedSegs.length === 0) {
       segList.innerHTML = `<div style="text-align:center;padding:32px;color:var(--muted);">
         <div style="font-size:2rem;margin-bottom:8px;">✅</div>
-        <p>No dead segments found! Your video looks clean.</p>
+        <p>No dead segments found. Your video looks clean.</p>
       </div>`;
       cutBtn.style.display = "none";
       reviewTitle.textContent = "No dead segments found";
-      reviewSummary.innerHTML = "Nothing to cut . Your video has no obvious dead air at this sensitivity level. Try increasing sensitivity or just download your original.";
+      reviewSummary.innerHTML = "Nothing to cut. Your video has no obvious dead air at this sensitivity level. Try increasing sensitivity or just download your original.";
       return;
     }
 
     cutBtn.style.display = "";
     reviewTitle.textContent = `Found ${detectedSegs.length} dead segment${detectedSegs.length > 1 ? "s" : ""}`;
+    initThumbVideo();
     renderSegList();
     updateSummary();
+    loadThumbs();
+  }
+
+  async function loadThumbs() {
+    for (let i = 0; i < detectedSegs.length; i++) {
+      const seg = detectedSegs[i];
+      const t = seg.start + Math.min(0.5, (seg.end === 9999 ? 0 : seg.end - seg.start) * 0.1);
+      const url = await captureThumb(t);
+      if (!url) continue;
+      const img = document.getElementById("thumb-" + i);
+      if (img) { img.src = url; img.style.opacity = "1"; }
+    }
   }
 
   function renderSegList() {
@@ -530,9 +577,13 @@
       const div = document.createElement("div");
       div.className = "segment-item" + (segEnabled[i] ? "" : " excluded");
       div.innerHTML = `
-        <span class="seg-icon">${typeIcon(seg.type)}</span>
-        <span class="seg-time">${fmt(seg.start)} → ${fmt(seg.end)}</span>
-        <span class="seg-type">${typeLabel(seg.type)}</span>
+        <img id="thumb-${i}" src="" alt="" style="width:80px;height:45px;object-fit:cover;border-radius:6px;flex-shrink:0;background:var(--surface2);opacity:0;transition:opacity .3s;" />
+        <div style="flex:1;min-width:0;">
+          <div style="display:flex;align-items:center;gap:8px;flex-wrap:wrap;">
+            <span class="seg-time">${fmt(seg.start)} → ${fmt(seg.end)}</span>
+            <span class="seg-type">${typeLabel(seg.type)}</span>
+          </div>
+        </div>
         <span class="seg-dur">${dur}s</span>
         <div class="seg-toggle ${segEnabled[i] ? "" : "off"}" data-idx="${i}" title="${segEnabled[i] ? "Will be cut" : "Will be kept"}"></div>
       `;
@@ -542,7 +593,10 @@
       btn.addEventListener("click", () => {
         const i = parseInt(btn.dataset.idx, 10);
         segEnabled[i] = !segEnabled[i];
-        renderSegList();
+        // toggle classes without full re-render to preserve loaded thumbs
+        const row = btn.closest(".segment-item");
+        if (segEnabled[i]) { row.classList.remove("excluded"); btn.classList.remove("off"); }
+        else               { row.classList.add("excluded");    btn.classList.add("off"); }
         updateSummary();
       });
     });
