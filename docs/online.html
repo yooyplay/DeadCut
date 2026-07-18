@@ -485,6 +485,13 @@
   });
 
   // ── Review ────────────────────────────────────────────────────
+  function fmtDur(s) {
+    const si = Math.round(s);
+    if (si < 60) return si + 's';
+    const m = Math.floor(si / 60), r = si % 60;
+    return r === 0 ? m + 'm' : m + 'm ' + r + 's';
+  }
+
   function fmt(t) {
     if (t === 9999) return "end";
     const m = Math.floor(t / 60);
@@ -573,7 +580,7 @@
   function renderSegList() {
     segList.innerHTML = "";
     detectedSegs.forEach((seg, i) => {
-      const dur = (seg.end === 9999 ? 0 : seg.end - seg.start).toFixed(1);
+      const dur = fmtDur(seg.end === 9999 ? 0 : seg.end - seg.start);
       const div = document.createElement("div");
       div.className = "segment-item" + (segEnabled[i] ? "" : " excluded");
       div.innerHTML = `
@@ -584,7 +591,7 @@
             <span class="seg-type">${typeLabel(seg.type)}</span>
           </div>
         </div>
-        <span class="seg-dur">${dur}s</span>
+        <span class="seg-dur">${dur}</span>
         <div class="seg-toggle ${segEnabled[i] ? "" : "off"}" data-idx="${i}" title="${segEnabled[i] ? "Will be cut" : "Will be kept"}"></div>
       `;
       segList.appendChild(div);
@@ -607,7 +614,7 @@
     const totalDur = tocut.reduce((sum, s) => sum + (s.end === 9999 ? 0 : s.end - s.start), 0);
     reviewSummary.innerHTML = tocut.length === 0
       ? "No segments selected for cutting . All dead air will be kept.."
-      : `<strong style="color:var(--a2)">${tocut.length} segment${tocut.length>1?"s":""}</strong> will be removed, saving approximately <strong style="color:var(--a2)">${totalDur.toFixed(1)}s</strong> of dead air.`;
+      : `<strong style="color:var(--a2)">${tocut.length} segment${tocut.length>1?"s":""}</strong> will be removed, saving approximately <strong style="color:var(--a2)">${fmtDur(totalDur)}</strong> of dead air.`;
   }
 
   document.getElementById("select-all-btn").addEventListener("click", () => {
@@ -729,7 +736,7 @@
       downloadLink.download = base + "_cut.mp4";
       const savedSec = tocut.reduce((s, c) => s + (c.end === 9999 ? 0 : c.end - c.start), 0);
       doneTitle.textContent = "Done! Your video is ready.";
-      doneSub.textContent   = `Removed ${tocut.length} dead segment${tocut.length>1?"s":""} (${savedSec.toFixed(1)}s of dead air).`;
+      doneSub.textContent   = `Removed ${tocut.length} dead segment${tocut.length>1?"s":""} (${fmtDur(savedSec)} of dead air).`;
 
       cutProgress.classList.remove("visible");
       stepReview.style.display = "none";
