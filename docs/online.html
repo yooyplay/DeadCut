@@ -164,6 +164,15 @@
       Scan for dead segments
     </button>
 
+    <!-- Large file warning -->
+    <div id="size-warning" style="display:none;margin-top:14px;padding:16px 18px;background:rgba(239,68,68,0.08);border:1px solid rgba(239,68,68,0.3);border-radius:12px;">
+      <p style="font-weight:600;margin-bottom:6px;">File too large for the browser tool</p>
+      <p style="color:var(--muted);font-size:.88rem;">The browser tool can handle files up to 2 GB — it has to load the whole video into memory. For larger files, use the Mac app instead. It streams the video directly from disk with no size limit.</p>
+      <a href="download.html" class="btn btn-primary" style="margin-top:14px;font-size:13px;padding:10px 22px;">
+        🖥️ Download the Mac app · Free
+      </a>
+    </div>
+
     <!-- Progress -->
     <div class="progress-wrap" id="scan-progress">
       <div class="progress-label" id="scan-label">Scanning…</div>
@@ -302,8 +311,31 @@
   loadingEl.style.display = "none";
 
   // ── File picking ──────────────────────────────────────────────
+  const MAX_BROWSER_BYTES = 2 * 1024 * 1024 * 1024; // 2 GB
+
   function setFile(f) {
     if (!f || !f.type.startsWith("video/")) return;
+
+    if (f.size > MAX_BROWSER_BYTES) {
+      const gb = (f.size / 1024 / 1024 / 1024).toFixed(1);
+      // Show inline warning instead of blocking
+      filePillName.textContent = f.name + "  " + gb + " GB";
+      filePillWrap.style.display = "block";
+      filePillWrap.querySelector(".file-pill").style.borderColor = "rgba(239,68,68,0.5)";
+      dzTitle.textContent = f.name;
+      dzSub.textContent   = gb + " GB · too large for browser";
+      scanBtn.disabled = true;
+      scanBtn.textContent = "File too large for browser";
+      document.getElementById("size-warning").style.display = "block";
+      selectedFile = null;
+      return;
+    }
+
+    document.getElementById("size-warning").style.display = "none";
+    scanBtn.textContent = "Scan for dead segments";
+    if (filePillWrap.querySelector(".file-pill")) {
+      filePillWrap.querySelector(".file-pill").style.borderColor = "";
+    }
     selectedFile = f;
     filePillName.textContent = f.name + "  " + (f.size/1024/1024).toFixed(1) + " MB";
     filePillWrap.style.display = "block";
@@ -319,6 +351,8 @@
     dzTitle.textContent = "Drop a video here";
     dzSub.textContent   = "or click to choose · mp4, mov, avi, mkv";
     scanBtn.disabled = true;
+    scanBtn.textContent = "Scan for dead segments";
+    document.getElementById("size-warning").style.display = "none";
   };
 
   fileInput.addEventListener("change", () => setFile(fileInput.files[0]));
