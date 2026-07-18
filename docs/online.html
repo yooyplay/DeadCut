@@ -165,12 +165,9 @@
     </button>
 
     <!-- Large file warning -->
-    <div id="size-warning" style="display:none;margin-top:14px;padding:16px 18px;background:rgba(239,68,68,0.08);border:1px solid rgba(239,68,68,0.3);border-radius:12px;">
-      <p style="font-weight:600;margin-bottom:6px;">File too large for the browser tool</p>
-      <p style="color:var(--muted);font-size:.88rem;">The browser tool can handle files up to 2 GB — it has to load the whole video into memory. For larger files, use the Mac app instead. It streams the video directly from disk with no size limit.</p>
-      <a href="download.html" class="btn btn-primary" style="margin-top:14px;font-size:13px;padding:10px 22px;">
-        🖥️ Download the Mac app · Free
-      </a>
+    <div id="size-warning" style="display:none;margin-top:14px;padding:14px 16px;background:rgba(249,115,22,0.07);border:1px solid rgba(249,115,22,0.25);border-radius:12px;font-size:.85rem;">
+      <p id="size-warn-text" style="color:var(--muted);margin-bottom:10px;"></p>
+      <a href="download.html" style="color:var(--a1);font-weight:600;">Download the Mac app (no size limit) →</a>
     </div>
 
     <!-- Progress -->
@@ -311,18 +308,30 @@
   loadingEl.style.display = "none";
 
   // ── File picking ──────────────────────────────────────────────
+  const GB2 = 2 * 1024 * 1024 * 1024;
+
   function setFile(f) {
     if (!f || !f.type.startsWith("video/")) return;
-    document.getElementById("size-warning").style.display = "none";
-    scanBtn.textContent = "Scan for dead segments";
     selectedFile = f;
-    const sizeTxt = f.size > 1024 * 1024 * 1024
+    const sizeTxt = f.size >= 1024 * 1024 * 1024
       ? (f.size / 1024 / 1024 / 1024).toFixed(1) + " GB"
       : (f.size / 1024 / 1024).toFixed(1) + " MB";
     filePillName.textContent = f.name + "  " + sizeTxt;
     filePillWrap.style.display = "block";
     dzTitle.textContent = f.name;
     dzSub.textContent   = sizeTxt + " · click to change";
+
+    const warn = document.getElementById("size-warning");
+    if (f.size > GB2) {
+      const gb = (f.size / 1024 / 1024 / 1024).toFixed(1);
+      document.getElementById("size-warn-text").textContent =
+        `This file is ${gb} GB. The browser tool loads the whole video into memory, so files over 2 GB usually fail. Try if you have enough RAM, or use the Mac app for reliable results.`;
+      warn.style.display = "block";
+      scanBtn.textContent = "Try anyway";
+    } else {
+      warn.style.display = "none";
+      scanBtn.textContent = "Scan for dead segments";
+    }
     scanBtn.disabled = false;
   }
 
@@ -335,6 +344,7 @@
     scanBtn.disabled = true;
     scanBtn.textContent = "Scan for dead segments";
     document.getElementById("size-warning").style.display = "none";
+    selectedFile = null;
   };
 
   fileInput.addEventListener("change", () => setFile(fileInput.files[0]));
@@ -389,10 +399,10 @@
         ff.FS("writeFile", inName, await fetchFile(selectedFile));
         scanBar.style.width = "20%";
       } catch(e) {
-        scanLabel.textContent = "Failed to load file. For files over 2 GB, use the Mac app.";
+        scanLabel.textContent = "Failed — not enough browser memory for this file size.";
         scanBtn.disabled = false;
+        scanBtn.textContent = "Try anyway";
         scanProgress.classList.remove("visible");
-        document.getElementById("size-warning").style.display = "block";
         return;
       }
     }
