@@ -311,36 +311,18 @@
   loadingEl.style.display = "none";
 
   // ── File picking ──────────────────────────────────────────────
-  const MAX_BROWSER_BYTES = 2 * 1024 * 1024 * 1024; // 2 GB
-
   function setFile(f) {
     if (!f || !f.type.startsWith("video/")) return;
-
-    if (f.size > MAX_BROWSER_BYTES) {
-      const gb = (f.size / 1024 / 1024 / 1024).toFixed(1);
-      // Show inline warning instead of blocking
-      filePillName.textContent = f.name + "  " + gb + " GB";
-      filePillWrap.style.display = "block";
-      filePillWrap.querySelector(".file-pill").style.borderColor = "rgba(239,68,68,0.5)";
-      dzTitle.textContent = f.name;
-      dzSub.textContent   = gb + " GB · too large for browser";
-      scanBtn.disabled = true;
-      scanBtn.textContent = "File too large for browser";
-      document.getElementById("size-warning").style.display = "block";
-      selectedFile = null;
-      return;
-    }
-
     document.getElementById("size-warning").style.display = "none";
     scanBtn.textContent = "Scan for dead segments";
-    if (filePillWrap.querySelector(".file-pill")) {
-      filePillWrap.querySelector(".file-pill").style.borderColor = "";
-    }
     selectedFile = f;
-    filePillName.textContent = f.name + "  " + (f.size/1024/1024).toFixed(1) + " MB";
+    const sizeTxt = f.size > 1024 * 1024 * 1024
+      ? (f.size / 1024 / 1024 / 1024).toFixed(1) + " GB"
+      : (f.size / 1024 / 1024).toFixed(1) + " MB";
+    filePillName.textContent = f.name + "  " + sizeTxt;
     filePillWrap.style.display = "block";
     dzTitle.textContent = f.name;
-    dzSub.textContent   = (f.size/1024/1024).toFixed(1) + " MB · click to change";
+    dzSub.textContent   = sizeTxt + " · click to change";
     scanBtn.disabled = false;
   }
 
@@ -390,20 +372,36 @@
     const silFile = "dc_sil.txt";
     const frzFile = "dc_frz.txt";
 
+    // Mount input via WORKERFS so large files are read from disk, not RAM.
+    // Falls back to fetchFile if WORKERFS is unavailable.
+    let usingWorkerFS = false;
+    let inPath = inName;
     try {
-      ff.FS("writeFile", inName, await fetchFile(selectedFile));
+      ff.FS("mkdir", "/dcinput");
+      ff.FS("mount", "WORKERFS", { files: [selectedFile] }, "/dcinput");
+      inPath = "/dcinput/" + selectedFile.name;
+      usingWorkerFS = true;
       scanBar.style.width = "20%";
-    } catch(e) {
-      state = "error";
-      scanLabel.textContent = "Failed to load file: " + e.message;
-      return;
+    } catch(_) {
+      // WORKERFS not available — fall back to loading into memory
+      try {
+        scanLabel.textContent = "Loading file into memory…";
+        ff.FS("writeFile", inName, await fetchFile(selectedFile));
+        scanBar.style.width = "20%";
+      } catch(e) {
+        scanLabel.textContent = "Failed to load file. For files over 2 GB, use the Mac app.";
+        scanBtn.disabled = false;
+        scanProgress.classList.remove("visible");
+        document.getElementById("size-warning").style.display = "block";
+        return;
+      }
     }
 
     // Two-pass: silence first, then freeze (avoids filter graph conflicts)
     scanLabel.textContent = "Detecting silence…";
     try {
       await ff.run(
-        "-i", inName,
+        "-i", inPath,
         "-af", `silencedetect=noise=${silNoise}dB:d=${silDur},ametadata=mode=print:file=${silFile}`,
         "-vn", "-f", "null", "-"
       );
@@ -413,13 +411,17 @@
     scanLabel.textContent = "Detecting frozen frames…";
     try {
       await ff.run(
-        "-i", inName,
+        "-i", inPath,
         "-vf", `freezedetect=n=${frzNoise}:d=${frzDur},metadata=mode=print:file=${frzFile}`,
         "-an", "-f", "null", "-"
       );
     } catch(e) { /* expected for -f null */ }
 
-    try { ff.FS("unlink", inName); } catch(_) {}
+    if (usingWorkerFS) {
+      try { ff.FS("umount", "/dcinput"); ff.FS("rmdir", "/dcinput"); } catch(_) {}
+    } else {
+      try { ff.FS("unlink", inName); } catch(_) {}
+    }
 
     scanBar.style.width = "90%";
     scanLabel.textContent = "Parsing results…";
@@ -571,16 +573,35 @@
     cutBtn.disabled = true;
     cutProgress.classList.add("visible");
     cutBar.style.width = "5%";
-    cutLabel.textContent = "Loading video…";
+    cutLabel.textContent = "Preparing…";
 
-    const ext    = selectedFile.name.split(".").pop() || "mp4";
-    const inName = "dc_cut_in." + ext;
-    const outName= "dc_cut_out.mp4";
+    const ext     = selectedFile.name.split(".").pop() || "mp4";
+    const outName = "dc_cut_out.mp4";
+
+    // Mount input via WORKERFS if possible (avoids loading large file into RAM)
+    let cutUsingWorkerFS = false;
+    let cutInPath = "dc_cut_in." + ext;
+    try {
+      ff.FS("mkdir", "/dccutinput");
+      ff.FS("mount", "WORKERFS", { files: [selectedFile] }, "/dccutinput");
+      cutInPath = "/dccutinput/" + selectedFile.name;
+      cutUsingWorkerFS = true;
+      cutBar.style.width = "15%";
+    } catch(_) {
+      cutLabel.textContent = "Loading video into memory…";
+      try {
+        ff.FS("writeFile", "dc_cut_in." + ext, await fetchFile(selectedFile));
+        cutBar.style.width = "15%";
+      } catch(e) {
+        cutLabel.textContent = "File too large to cut in browser. Use the Mac app for files over 2 GB.";
+        cutBtn.disabled = false;
+        return;
+      }
+    }
+
+    cutLabel.textContent = "Building cut list…";
 
     try {
-      ff.FS("writeFile", inName, await fetchFile(selectedFile));
-      cutBar.style.width = "15%";
-      cutLabel.textContent = "Building cut list…";
 
       // Build keep segments (inverse of cut list)
       // Sort cut segments by start time
@@ -619,7 +640,7 @@
       cutLabel.textContent = `Cutting ${tocut.length} segment${tocut.length>1?"s":""}…`;
 
       await ff.run(
-        "-i", inName,
+        "-i", cutInPath,
         "-filter_complex", fc,
         "-map", "[vout]", "-map", "[aout]",
         "-c:v", "libx264", "-crf", "18", "-preset", "fast",
@@ -627,9 +648,17 @@
         "-movflags", "+faststart", "-y", outName
       );
 
+      if (cutUsingWorkerFS) {
+        try { ff.FS("umount", "/dccutinput"); ff.FS("rmdir", "/dccutinput"); } catch(_) {}
+      } else {
+        try { ff.FS("unlink", "dc_cut_in." + ext); } catch(_) {}
+      }
+
       const data = ff.FS("readFile", outName);
       const blob = new Blob([data.buffer], { type: "video/mp4" });
       const url  = URL.createObjectURL(blob);
+
+      try { ff.FS("unlink", outName); } catch(_) {}
 
       const base = selectedFile.name.replace(/\.[^.]+$/, "");
       downloadLink.href     = url;
@@ -638,17 +667,17 @@
       doneTitle.textContent = "Done! Your video is ready.";
       doneSub.textContent   = `Removed ${tocut.length} dead segment${tocut.length>1?"s":""} (${savedSec.toFixed(1)}s of dead air).`;
 
-      try { ff.FS("unlink", inName); ff.FS("unlink", outName); } catch(_) {}
-
       cutProgress.classList.remove("visible");
       stepReview.style.display = "none";
       stepDone.style.display   = "block";
 
-      // Auto-trigger download
       downloadLink.click();
 
     } catch(err) {
-      cutLabel.textContent = "❌ Error: " + err.message;
+      if (cutUsingWorkerFS) {
+        try { ff.FS("umount", "/dccutinput"); ff.FS("rmdir", "/dccutinput"); } catch(_) {}
+      }
+      cutLabel.textContent = "Error: " + err.message;
       cutBtn.disabled = false;
     }
   });
