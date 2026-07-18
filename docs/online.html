@@ -707,9 +707,9 @@
         "-i", cutInPath,
         "-filter_complex", fc,
         "-map", "[vout]", "-map", "[aout]",
-        "-c:v", "libx264", "-crf", "18", "-preset", "fast",
-        "-c:a", "aac", "-b:a", "192k",
-        "-movflags", "+faststart", "-y", outName
+        "-c:v", "libx264", "-crf", "23", "-preset", "fast",
+        "-c:a", "aac", "-b:a", "128k",
+        "-movflags", "+faststart", "-f", "mp4", "-y", outName
       );
 
       if (cutUsingWorkerFS) {
