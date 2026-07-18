@@ -697,27 +697,35 @@
         return;
       }
 
-      // Build filter_complex with trim + concat
-      let filterV = "", filterA = "", mapInputs = "";
-      keepSegs.forEach((seg, i) => {
-        const endArg = seg.end > 99990 ? "" : `:end=${seg.end}`;
-        filterV += `[0:v]trim=start=${seg.start}${endArg},setpts=PTS-STARTPTS[v${i}];`;
-        filterA += `[0:a]atrim=start=${seg.start}${endArg},asetpts=PTS-STARTPTS[a${i}];`;
-        mapInputs += `[v${i}][a${i}]`;
-      });
-      const fc = filterV + filterA + `${mapInputs}concat=n=${keepSegs.length}:v=1:a=1[vout][aout]`;
+      // Stream-copy each keep segment, then concat — no re-encoding = very fast
+      const segFiles = [];
+      for (let i = 0; i < keepSegs.length; i++) {
+        const seg = keepSegs[i];
+        const segName = `dc_seg_${i}.mp4`;
+        segFiles.push(segName);
+        cutBar.style.width = (20 + (i / keepSegs.length) * 55) + "%";
+        cutLabel.textContent = `Extracting segment ${i+1} / ${keepSegs.length}…`;
+        const segArgs = ["-ss", String(seg.start), "-i", cutInPath];
+        if (seg.end < 99990) segArgs.push("-t", String(seg.end - seg.start));
+        segArgs.push("-c", "copy", "-avoid_negative_ts", "make_zero", "-y", segName);
+        try { await ff.run(...segArgs); } catch(e) { /* expected for copy ops */ }
+      }
 
-      cutBar.style.width = "20%";
-      cutLabel.textContent = `Cutting ${tocut.length} segment${tocut.length>1?"s":""}…`;
+      // Write concat list
+      const listName = "dc_concat.txt";
+      ff.FS("writeFile", listName, segFiles.map(f => `file '${f}'`).join("\n"));
+
+      cutBar.style.width = "80%";
+      cutLabel.textContent = "Joining segments…";
 
       await ff.run(
-        "-i", cutInPath,
-        "-filter_complex", fc,
-        "-map", "[vout]", "-map", "[aout]",
-        "-c:v", "libx264", "-crf", "23", "-preset", "fast",
-        "-c:a", "aac", "-b:a", "128k",
-        "-movflags", "+faststart", "-f", "mp4", "-y", outName
+        "-f", "concat", "-safe", "0", "-i", listName,
+        "-c", "copy", "-movflags", "+faststart", "-f", "mp4", "-y", outName
       );
+
+      // Cleanup
+      segFiles.forEach(f => { try { ff.FS("unlink", f); } catch(_) {} });
+      try { ff.FS("unlink", listName); } catch(_) {}
 
       if (cutUsingWorkerFS) {
         try { ff.FS("umount", "/dccutinput"); ff.FS("rmdir", "/dccutinput"); } catch(_) {}
