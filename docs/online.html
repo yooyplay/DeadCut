@@ -4,7 +4,7 @@
   <meta charset="UTF-8" />
   <meta name="viewport" content="width=device-width, initial-scale=1.0" />
   <title>DeadCut Online · Remove Dead Air in Your Browser</title>
-  <meta name="description" content="Automatically cut loading screens, pauses, and frozen frames from gameplay videos. 100% private, files never leave your device." />
+  <meta name="description" content="Automatically cut loading screens, pauses, frozen frames, and silence from any video. 100% private. 100% private, files never leave your device." />
   <link rel="icon" type="image/png" href="icon.png" />
   <link rel="stylesheet" href="style.css" />
 
@@ -119,8 +119,8 @@
 <!-- ── Tool ──────────────────────────────────────────────────── -->
 <div class="page" style="max-width:680px;">
 
-  <h1 style="margin-bottom:6px;">Remove dead air in your browser</h1>
-  <p>Drop a gameplay video. DeadCut will find the dead segments, let you review them, then export a clean cut.</p>
+  <h1 style="margin-bottom:6px;">Remove dead air from any video</h1>
+  <p>Drop any video. DeadCut finds the silent and frozen parts, lets you review them, and exports a clean cut.</p>
 
   <!-- Loading state -->
   <div id="loading-state" style="text-align:center;padding:48px;display:none;">
@@ -136,8 +136,8 @@
 
     <div class="drop-zone" id="drop-zone">
       <input type="file" id="file-input" accept="video/*" />
-      <div class="drop-zone-icon">🎮</div>
-      <h3 id="dz-title">Drop your gameplay video here</h3>
+      <div class="drop-zone-icon">🎬</div>
+      <h3 id="dz-title">Drop a video here</h3>
       <p id="dz-sub">or click to choose · mp4, mov, avi, mkv</p>
     </div>
 
@@ -259,7 +259,7 @@
   let ff = null;
   let selectedFile = null;
   let detectedSegs = [];  // [{start, end, type}]
-  let segEnabled   = [];  // bool[] — true = will be cut
+  let segEnabled   = [];  // bool[] : true = will be cut
 
   const loadingEl   = document.getElementById("loading-state");
   const stepPick    = document.getElementById("step-pick");
@@ -316,7 +316,7 @@
     selectedFile = null;
     fileInput.value = "";
     filePillWrap.style.display = "none";
-    dzTitle.textContent = "Drop your gameplay video here";
+    dzTitle.textContent = "Drop a video here";
     dzSub.textContent   = "or click to choose · mp4, mov, avi, mkv";
     scanBtn.disabled = true;
   };
@@ -453,7 +453,7 @@
       </div>`;
       cutBtn.style.display = "none";
       reviewTitle.textContent = "No dead segments found";
-      reviewSummary.innerHTML = "Nothing to cut — your video already has no obvious dead air at this sensitivity level. Try increasing sensitivity or just download your original.";
+      reviewSummary.innerHTML = "Nothing to cut . Your video has no obvious dead air at this sensitivity level. Try increasing sensitivity or just download your original.";
       return;
     }
 
@@ -492,7 +492,7 @@
     const tocut = detectedSegs.filter((_, i) => segEnabled[i]);
     const totalDur = tocut.reduce((sum, s) => sum + (s.end === 9999 ? 0 : s.end - s.start), 0);
     reviewSummary.innerHTML = tocut.length === 0
-      ? "No segments selected for cutting — all dead air will be kept."
+      ? "No segments selected for cutting . All dead air will be kept.."
       : `<strong style="color:var(--a2)">${tocut.length} segment${tocut.length>1?"s":""}</strong> will be removed, saving approximately <strong style="color:var(--a2)">${totalDur.toFixed(1)}s</strong> of dead air.`;
   }
 
@@ -551,7 +551,7 @@
       if (cursor < 999990) keepSegs.push({ start: cursor, end: 999999 });
 
       if (keepSegs.length === 0) {
-        alert("All segments would be removed — nothing left to export.");
+        alert("All segments would be removed . Nothing left to export.");
         cutBtn.disabled = false;
         cutProgress.classList.remove("visible");
         return;
@@ -612,7 +612,7 @@
     segEnabled    = [];
     fileInput.value = "";
     filePillWrap.style.display = "none";
-    dzTitle.textContent = "Drop your gameplay video here";
+    dzTitle.textContent = "Drop a video here";
     dzSub.textContent   = "or click to choose · mp4, mov, avi, mkv";
     scanBtn.disabled = true;
     scanProgress.classList.remove("visible");
