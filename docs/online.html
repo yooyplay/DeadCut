@@ -1,0 +1,631 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+  <title>DeadCut Online · Remove Dead Air in Your Browser</title>
+  <meta name="description" content="Automatically cut loading screens, pauses, and frozen frames from gameplay videos. 100% private, files never leave your device." />
+  <link rel="icon" type="image/png" href="icon.png" />
+  <link rel="stylesheet" href="style.css" />
+
+  <!-- Cross-origin isolation required for SharedArrayBuffer (ffmpeg.wasm) -->
+  <script>
+    if ("serviceWorker" in navigator) {
+      navigator.serviceWorker.register("coi-serviceworker.js").then(() => {
+        if (!window.crossOriginIsolated) location.reload();
+      });
+    }
+  </script>
+
+  <!-- FFmpeg.wasm v0.11 -->
+  <script src="https://unpkg.com/@ffmpeg/ffmpeg@0.11.6/dist/ffmpeg.min.js"></script>
+
+  <style>
+    .file-pill {
+      display: flex;
+      align-items: center;
+      justify-content: space-between;
+      background: var(--surface2);
+      border: 1px solid var(--border);
+      border-radius: 8px;
+      padding: 8px 12px;
+      font-size: .82rem;
+      color: var(--muted);
+    }
+    .file-pill span { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; max-width: 340px; }
+    .file-pill button {
+      background: none; border: none; cursor: pointer;
+      color: var(--muted); font-size: 14px; padding: 0 0 0 8px;
+    }
+    .file-pill button:hover { color: #ef4444; }
+
+    .sensitivity-row {
+      display: flex;
+      align-items: center;
+      gap: 12px;
+      margin-bottom: 20px;
+    }
+    .sensitivity-row label { font-size: .82rem; color: var(--muted); white-space: nowrap; }
+    .sensitivity-row input[type=range] {
+      flex: 1; accent-color: var(--a2);
+    }
+    .sensitivity-row span { font-size: .82rem; color: var(--a2); font-weight: 600; min-width: 60px; }
+
+    .seg-list { display: flex; flex-direction: column; gap: 6px; margin-top: 8px; }
+
+    .segment-item {
+      display: flex;
+      align-items: center;
+      gap: 12px;
+      padding: 10px 14px;
+      background: var(--surface);
+      border: 1.5px solid rgba(239,68,68,0.3);
+      border-radius: 10px;
+      font-size: .83rem;
+    }
+    .segment-item .seg-icon { font-size: 1.1rem; }
+    .segment-item .seg-time { font-family: "SF Mono", Menlo, monospace; font-size: .78rem; color: var(--muted); white-space: nowrap; }
+    .segment-item .seg-dur  { color: var(--a2); font-weight: 700; white-space: nowrap; font-size: .83rem; }
+    .segment-item .seg-type { flex: 1; color: var(--muted); }
+    .segment-item.excluded  { border-color: var(--border); opacity: .5; }
+
+    .seg-toggle {
+      width: 38px; height: 22px;
+      background: rgba(239,68,68,0.25);
+      border: 1.5px solid var(--a2);
+      border-radius: 99px;
+      position: relative;
+      cursor: pointer;
+      transition: background .2s, border-color .2s;
+      flex-shrink: 0;
+    }
+    .seg-toggle::after {
+      content: '';
+      position: absolute;
+      top: 2px; left: 18px;
+      width: 14px; height: 14px;
+      border-radius: 50%;
+      background: var(--a2);
+      transition: transform .2s, background .2s;
+    }
+    .seg-toggle.off { background: var(--surface2); border-color: var(--border); }
+    .seg-toggle.off::after { left: 2px; background: var(--muted); }
+  </style>
+</head>
+<body>
+
+<!-- ── Nav ───────────────────────────────────────────────────── -->
+<nav class="nav">
+  <a href="index.html" class="nav-logo">
+    <span style="font-size:1.6rem;line-height:1;">✂️</span>
+    <span class="nav-logo-text">DeadCut</span>
+  </a>
+  <div class="nav-links">
+    <a href="download.html">Download</a>
+    <a href="online.html">Use Online</a>
+    <a href="contact.html">Contact</a>
+  </div>
+</nav>
+
+<!-- ── Privacy banner ─────────────────────────────────────────── -->
+<div style="background:linear-gradient(90deg,rgba(249,115,22,0.1),rgba(239,68,68,0.1),rgba(185,28,28,0.1));border-bottom:1px solid var(--border);padding:14px 24px;text-align:center;">
+  <p style="font-size:.9rem;display:flex;align-items:center;justify-content:center;gap:10px;flex-wrap:wrap;">
+    <span style="font-size:1.1rem">🔒</span>
+    <strong>Your files never leave your device.</strong>
+    <span style="color:var(--muted)">Detection and cutting happen 100% in your browser using WebAssembly. Nothing is uploaded. Ever.</span>
+  </p>
+</div>
+
+<!-- ── Tool ──────────────────────────────────────────────────── -->
+<div class="page" style="max-width:680px;">
+
+  <h1 style="margin-bottom:6px;">Remove dead air in your browser</h1>
+  <p>Drop a gameplay video. DeadCut will find the dead segments, let you review them, then export a clean cut.</p>
+
+  <!-- Loading state -->
+  <div id="loading-state" style="text-align:center;padding:48px;display:none;">
+    <div style="font-size:2rem;margin-bottom:12px;">⚙️</div>
+    <p style="color:var(--muted);">Loading ffmpeg.wasm (~30MB, one-time)…</p>
+    <div class="progress-bar-bg" style="max-width:280px;margin:16px auto 0;">
+      <div class="progress-bar" id="load-bar" style="width:0%"></div>
+    </div>
+  </div>
+
+  <!-- ── Step 1: Pick file ─────────────────────────────────── -->
+  <div id="step-pick">
+
+    <div class="drop-zone" id="drop-zone">
+      <input type="file" id="file-input" accept="video/*" />
+      <div class="drop-zone-icon">🎮</div>
+      <h3 id="dz-title">Drop your gameplay video here</h3>
+      <p id="dz-sub">or click to choose · mp4, mov, avi, mkv</p>
+    </div>
+
+    <!-- File pill -->
+    <div id="file-pill-wrap" style="margin-bottom:16px;display:none;">
+      <div class="file-pill">
+        <span id="file-pill-name"></span>
+        <button onclick="clearFile()" title="Remove">✕</button>
+      </div>
+    </div>
+
+    <!-- Sensitivity -->
+    <p style="font-size:.82rem;color:var(--muted);margin-bottom:8px;">Detection sensitivity:</p>
+    <div class="sensitivity-row">
+      <label>Less aggressive</label>
+      <input type="range" id="sensitivity" min="1" max="5" value="3" />
+      <label>More aggressive</label>
+    </div>
+    <p style="font-size:.75rem;color:var(--muted);margin-bottom:20px;margin-top:-6px;">
+      Higher = removes more (shorter silences &amp; freezes). Lower = only removes obvious dead air.
+    </p>
+
+    <button class="btn btn-primary" id="scan-btn" disabled style="width:100%;justify-content:center;font-size:15px;border-radius:12px;">
+      Scan for dead segments
+    </button>
+
+    <!-- Progress -->
+    <div class="progress-wrap" id="scan-progress">
+      <div class="progress-label" id="scan-label">Scanning…</div>
+      <div class="progress-bar-bg">
+        <div class="progress-bar" id="scan-bar"></div>
+      </div>
+    </div>
+
+  </div>
+
+  <!-- ── Step 2: Review segments ───────────────────────────── -->
+  <div id="step-review" style="display:none;">
+
+    <div style="display:flex;align-items:center;justify-content:space-between;margin-bottom:12px;flex-wrap:wrap;gap:8px;">
+      <h3 style="font-size:1rem;font-weight:700;" id="review-title">Detected dead segments</h3>
+      <div style="display:flex;gap:8px;">
+        <button class="btn btn-secondary" id="select-all-btn" style="font-size:12px;padding:6px 14px;border-radius:8px;">Cut all</button>
+        <button class="btn btn-secondary" id="select-none-btn" style="font-size:12px;padding:6px 14px;border-radius:8px;">Keep all</button>
+      </div>
+    </div>
+
+    <p style="font-size:.82rem;color:var(--muted);margin-bottom:12px;">
+      Toggle the segments you want to <strong style="color:var(--a2)">cut</strong>. Red = will be removed.
+    </p>
+
+    <div class="seg-list" id="seg-list"></div>
+
+    <div style="margin-top:16px;padding:14px 16px;background:var(--surface);border:1px solid var(--border);border-radius:10px;font-size:.82rem;color:var(--muted);" id="review-summary"></div>
+
+    <div style="display:flex;gap:10px;margin-top:20px;">
+      <button class="btn btn-secondary" id="back-btn" style="font-size:13px;padding:10px 20px;border-radius:10px;">← Scan again</button>
+      <button class="btn btn-primary" id="cut-btn" style="flex:1;justify-content:center;font-size:15px;border-radius:12px;">
+        ✂️ Cut &amp; Download
+      </button>
+    </div>
+
+    <!-- Cut progress -->
+    <div class="progress-wrap" id="cut-progress" style="margin-top:16px;">
+      <div class="progress-label" id="cut-label">Cutting…</div>
+      <div class="progress-bar-bg">
+        <div class="progress-bar" id="cut-bar"></div>
+      </div>
+    </div>
+
+  </div>
+
+  <!-- ── Step 3: Done ──────────────────────────────────────── -->
+  <div id="step-done" style="display:none;text-align:center;padding:40px 0;">
+    <div style="font-size:3rem;margin-bottom:16px;">✅</div>
+    <h2 style="margin-bottom:8px;" id="done-title">Done!</h2>
+    <p style="color:var(--muted);margin-bottom:24px;" id="done-sub"></p>
+    <div style="display:flex;gap:10px;justify-content:center;flex-wrap:wrap;">
+      <a id="download-link" class="btn btn-primary" download>⬇️ Save video</a>
+      <button class="btn btn-secondary" id="restart-btn" style="font-size:13px;">Convert another</button>
+    </div>
+  </div>
+
+  <!-- Privacy callout -->
+  <div style="margin-top:40px;background:linear-gradient(135deg,rgba(249,115,22,0.06),rgba(239,68,68,0.06));border:1px solid rgba(239,68,68,0.18);border-radius:var(--radius);padding:20px 24px;">
+    <h4 style="margin-bottom:8px;display:flex;align-items:center;gap:8px;"><span>🔒</span> How your privacy is protected</h4>
+    <ul style="color:var(--muted);font-size:.88rem;line-height:1.8;padding-left:18px;">
+      <li>Your video is processed entirely inside your browser using <strong>WebAssembly</strong></li>
+      <li>No file is ever uploaded to any server, not even ours</li>
+      <li>When you close the tab, everything is gone</li>
+      <li>You can even use this tool with your WiFi turned off</li>
+    </ul>
+  </div>
+
+  <!-- Prefer native app -->
+  <div style="text-align:center;margin-top:28px;padding:24px;background:var(--surface);border:1px solid var(--border);border-radius:var(--radius);">
+    <p style="color:var(--muted);font-size:.88rem;margin-bottom:14px;">Want faster processing with no ~30MB load time?</p>
+    <a href="download.html" class="btn btn-secondary" style="font-size:13px;padding:10px 22px;">
+      🖥️ Download the Mac app · Free
+    </a>
+  </div>
+
+</div>
+
+<!-- ── Footer ─────────────────────────────────────────────────── -->
+<footer>
+  <p>DeadCut · Files never leave your device · <a href="privacy.html">Privacy Policy</a> · <a href="terms.html">Terms of Use</a> · <a href="contact.html">Contact</a></p>
+</footer>
+
+<!-- ── Ko-fi ───────────────────────────────────────────────────── -->
+<a href="https://ko-fi.com/yooyplay" target="_blank" class="kofi-widget">☕ Support me</a>
+
+<!-- ── JS ────────────────────────────────────────────────────── -->
+<script>
+(async () => {
+  const { createFFmpeg, fetchFile } = FFmpeg;
+  const CORE = "https://unpkg.com/@ffmpeg/core@0.11.0/dist/ffmpeg-core.js";
+
+  let ff = null;
+  let selectedFile = null;
+  let detectedSegs = [];  // [{start, end, type}]
+  let segEnabled   = [];  // bool[] — true = will be cut
+
+  const loadingEl   = document.getElementById("loading-state");
+  const stepPick    = document.getElementById("step-pick");
+  const stepReview  = document.getElementById("step-review");
+  const stepDone    = document.getElementById("step-done");
+  const dropZone    = document.getElementById("drop-zone");
+  const fileInput   = document.getElementById("file-input");
+  const dzTitle     = document.getElementById("dz-title");
+  const dzSub       = document.getElementById("dz-sub");
+  const filePillWrap= document.getElementById("file-pill-wrap");
+  const filePillName= document.getElementById("file-pill-name");
+  const scanBtn     = document.getElementById("scan-btn");
+  const scanProgress= document.getElementById("scan-progress");
+  const scanLabel   = document.getElementById("scan-label");
+  const scanBar     = document.getElementById("scan-bar");
+  const segList     = document.getElementById("seg-list");
+  const reviewTitle = document.getElementById("review-title");
+  const reviewSummary=document.getElementById("review-summary");
+  const cutBtn      = document.getElementById("cut-btn");
+  const cutProgress = document.getElementById("cut-progress");
+  const cutLabel    = document.getElementById("cut-label");
+  const cutBar      = document.getElementById("cut-bar");
+  const downloadLink= document.getElementById("download-link");
+  const doneTitle   = document.getElementById("done-title");
+  const doneSub     = document.getElementById("done-sub");
+  const sensitivityEl=document.getElementById("sensitivity");
+
+  // Load ffmpeg
+  loadingEl.style.display = "block";
+  try {
+    ff = createFFmpeg({ log: true, corePath: CORE, progress: ({ratio}) => {
+      scanBar.style.width = Math.round(Math.min(ratio,1)*100) + "%";
+      cutBar.style.width  = Math.round(Math.min(ratio,1)*100) + "%";
+    }});
+    await ff.load();
+  } catch(e) {
+    loadingEl.innerHTML = `<p style="color:#ef4444">Failed to load ffmpeg.wasm. Try Chrome or Edge.<br><small>${e.message}</small></p>`;
+    return;
+  }
+  loadingEl.style.display = "none";
+
+  // ── File picking ──────────────────────────────────────────────
+  function setFile(f) {
+    if (!f || !f.type.startsWith("video/")) return;
+    selectedFile = f;
+    filePillName.textContent = f.name + "  " + (f.size/1024/1024).toFixed(1) + " MB";
+    filePillWrap.style.display = "block";
+    dzTitle.textContent = f.name;
+    dzSub.textContent   = (f.size/1024/1024).toFixed(1) + " MB · click to change";
+    scanBtn.disabled = false;
+  }
+
+  window.clearFile = () => {
+    selectedFile = null;
+    fileInput.value = "";
+    filePillWrap.style.display = "none";
+    dzTitle.textContent = "Drop your gameplay video here";
+    dzSub.textContent   = "or click to choose · mp4, mov, avi, mkv";
+    scanBtn.disabled = true;
+  };
+
+  fileInput.addEventListener("change", () => setFile(fileInput.files[0]));
+  dropZone.addEventListener("dragover",  e => { e.preventDefault(); dropZone.classList.add("dragover"); });
+  dropZone.addEventListener("dragleave", () => dropZone.classList.remove("dragover"));
+  dropZone.addEventListener("drop", e => {
+    e.preventDefault();
+    dropZone.classList.remove("dragover");
+    setFile(e.dataTransfer.files[0]);
+  });
+
+  // ── Scan ──────────────────────────────────────────────────────
+  scanBtn.addEventListener("click", async () => {
+    if (!selectedFile) return;
+    scanBtn.disabled = true;
+    scanProgress.classList.add("visible");
+    scanLabel.textContent = "Scanning for silence and frozen frames…";
+    scanBar.style.width = "5%";
+
+    const ext    = selectedFile.name.split(".").pop() || "mp4";
+    const inName = "dc_input." + ext;
+
+    // Sensitivity → thresholds
+    const sens = parseInt(sensitivityEl.value, 10); // 1–5
+    // silence noise floor: -50dB (strict) to -25dB (loose)
+    const silNoise = [-50, -45, -40, -35, -25][sens - 1];
+    // min silence duration: 3s (strict) to 1s (loose)
+    const silDur   = [3, 2.5, 2, 1.5, 1][sens - 1];
+    // freeze noise: 0.0003 (strict) to 0.002 (loose)
+    const frzNoise = [0.0003, 0.0005, 0.001, 0.0015, 0.002][sens - 1];
+    // min freeze duration
+    const frzDur   = [3, 2.5, 2, 1.5, 1][sens - 1];
+
+    let logs = "";
+    const origLog = ff.setLogger;
+    // Capture ffmpeg stderr
+    ff.setLogger(({ message }) => { logs += message + "\n"; });
+
+    try {
+      ff.FS("writeFile", inName, await fetchFile(selectedFile));
+      scanBar.style.width = "20%";
+
+      // Run detection pass
+      await ff.run(
+        "-i", inName,
+        "-vf", `freezedetect=n=${frzNoise}:d=${frzDur}`,
+        "-af", `silencedetect=noise=${silNoise}dB:d=${silDur}`,
+        "-f", "null", "-"
+      );
+
+      ff.FS("unlink", inName);
+    } catch(e) { /* ffmpeg always "errors" on -f null */ }
+
+    scanBar.style.width = "90%";
+    scanLabel.textContent = "Parsing results…";
+
+    // Parse silence segments
+    const silSegs = [];
+    const silStartRe = /silence_start: ([\d.]+)/g;
+    const silEndRe   = /silence_end: ([\d.]+)/g;
+    let ms, me;
+    const silStarts = [], silEnds = [];
+    while ((ms = silStartRe.exec(logs)) !== null) silStarts.push(parseFloat(ms[1]));
+    while ((me = silEndRe.exec(logs))   !== null) silEnds.push(parseFloat(me[1]));
+    for (let i = 0; i < silStarts.length; i++) {
+      silSegs.push({ start: silStarts[i], end: silEnds[i] || 9999, type: "silence" });
+    }
+
+    // Parse freeze segments
+    const frzSegs = [];
+    const frzStartRe = /freeze_start: ([\d.]+)/g;
+    const frzEndRe   = /freeze_end: ([\d.]+)/g;
+    const frzStarts = [], frzEnds = [];
+    let fs, fe;
+    while ((fs = frzStartRe.exec(logs)) !== null) frzStarts.push(parseFloat(fs[1]));
+    while ((fe = frzEndRe.exec(logs))   !== null) frzEnds.push(parseFloat(fe[1]));
+    for (let i = 0; i < frzStarts.length; i++) {
+      frzSegs.push({ start: frzStarts[i], end: frzEnds[i] || 9999, type: "freeze" });
+    }
+
+    // Merge overlapping segments of the same or adjacent type
+    const allSegs = [...silSegs, ...frzSegs].sort((a, b) => a.start - b.start);
+    const merged = [];
+    for (const seg of allSegs) {
+      const last = merged[merged.length - 1];
+      if (last && seg.start <= last.end + 0.5) {
+        last.end  = Math.max(last.end, seg.end);
+        if (last.type !== seg.type) last.type = "freeze+silence";
+      } else {
+        merged.push({ ...seg });
+      }
+    }
+
+    detectedSegs = merged.filter(s => s.end - s.start >= silDur);
+    segEnabled   = detectedSegs.map(() => true);
+
+    scanBar.style.width = "100%";
+
+    // Show review step
+    setTimeout(() => {
+      scanProgress.classList.remove("visible");
+      showReview();
+    }, 400);
+  });
+
+  // ── Review ────────────────────────────────────────────────────
+  function fmt(t) {
+    if (t === 9999) return "end";
+    const m = Math.floor(t / 60);
+    const s = (t % 60).toFixed(1).padStart(4, "0");
+    return `${m}:${s}`;
+  }
+  function typeIcon(t) {
+    if (t === "silence") return "🔕";
+    if (t === "freeze")  return "🧊";
+    return "🧊🔕";
+  }
+  function typeLabel(t) {
+    if (t === "silence") return "Silent period";
+    if (t === "freeze")  return "Frozen frame";
+    return "Frozen + silent";
+  }
+
+  function showReview() {
+    stepPick.style.display   = "none";
+    stepReview.style.display = "block";
+
+    if (detectedSegs.length === 0) {
+      segList.innerHTML = `<div style="text-align:center;padding:32px;color:var(--muted);">
+        <div style="font-size:2rem;margin-bottom:8px;">✅</div>
+        <p>No dead segments found! Your video looks clean.</p>
+      </div>`;
+      cutBtn.style.display = "none";
+      reviewTitle.textContent = "No dead segments found";
+      reviewSummary.innerHTML = "Nothing to cut — your video already has no obvious dead air at this sensitivity level. Try increasing sensitivity or just download your original.";
+      return;
+    }
+
+    cutBtn.style.display = "";
+    reviewTitle.textContent = `Found ${detectedSegs.length} dead segment${detectedSegs.length > 1 ? "s" : ""}`;
+    renderSegList();
+    updateSummary();
+  }
+
+  function renderSegList() {
+    segList.innerHTML = "";
+    detectedSegs.forEach((seg, i) => {
+      const dur = (seg.end === 9999 ? 0 : seg.end - seg.start).toFixed(1);
+      const div = document.createElement("div");
+      div.className = "segment-item" + (segEnabled[i] ? "" : " excluded");
+      div.innerHTML = `
+        <span class="seg-icon">${typeIcon(seg.type)}</span>
+        <span class="seg-time">${fmt(seg.start)} → ${fmt(seg.end)}</span>
+        <span class="seg-type">${typeLabel(seg.type)}</span>
+        <span class="seg-dur">${dur}s</span>
+        <div class="seg-toggle ${segEnabled[i] ? "" : "off"}" data-idx="${i}" title="${segEnabled[i] ? "Will be cut" : "Will be kept"}"></div>
+      `;
+      segList.appendChild(div);
+    });
+    segList.querySelectorAll(".seg-toggle").forEach(btn => {
+      btn.addEventListener("click", () => {
+        const i = parseInt(btn.dataset.idx, 10);
+        segEnabled[i] = !segEnabled[i];
+        renderSegList();
+        updateSummary();
+      });
+    });
+  }
+
+  function updateSummary() {
+    const tocut = detectedSegs.filter((_, i) => segEnabled[i]);
+    const totalDur = tocut.reduce((sum, s) => sum + (s.end === 9999 ? 0 : s.end - s.start), 0);
+    reviewSummary.innerHTML = tocut.length === 0
+      ? "No segments selected for cutting — all dead air will be kept."
+      : `<strong style="color:var(--a2)">${tocut.length} segment${tocut.length>1?"s":""}</strong> will be removed, saving approximately <strong style="color:var(--a2)">${totalDur.toFixed(1)}s</strong> of dead air.`;
+  }
+
+  document.getElementById("select-all-btn").addEventListener("click", () => {
+    segEnabled = segEnabled.map(() => true);
+    renderSegList(); updateSummary();
+  });
+  document.getElementById("select-none-btn").addEventListener("click", () => {
+    segEnabled = segEnabled.map(() => false);
+    renderSegList(); updateSummary();
+  });
+  document.getElementById("back-btn").addEventListener("click", () => {
+    stepReview.style.display = "none";
+    stepPick.style.display   = "block";
+    scanBtn.disabled = false;
+    scanProgress.classList.remove("visible");
+    scanBar.style.width = "0%";
+  });
+
+  // ── Cut ───────────────────────────────────────────────────────
+  cutBtn.addEventListener("click", async () => {
+    const tocut = detectedSegs.filter((_, i) => segEnabled[i]);
+    if (tocut.length === 0) {
+      alert("No segments selected for cutting. Toggle at least one segment to cut.");
+      return;
+    }
+
+    cutBtn.disabled = true;
+    cutProgress.classList.add("visible");
+    cutBar.style.width = "5%";
+    cutLabel.textContent = "Loading video…";
+
+    const ext    = selectedFile.name.split(".").pop() || "mp4";
+    const inName = "dc_cut_in." + ext;
+    const outName= "dc_cut_out.mp4";
+
+    try {
+      ff.FS("writeFile", inName, await fetchFile(selectedFile));
+      cutBar.style.width = "15%";
+      cutLabel.textContent = "Building cut list…";
+
+      // Build keep segments (inverse of cut list)
+      // Sort cut segments by start time
+      const cuts = tocut.slice().sort((a, b) => a.start - b.start);
+
+      // Keep segments = gaps between cuts
+      const keepSegs = [];
+      let cursor = 0;
+      for (const cut of cuts) {
+        if (cut.start > cursor + 0.05) {
+          keepSegs.push({ start: cursor, end: cut.start });
+        }
+        cursor = cut.end === 9999 ? 999999 : cut.end;
+      }
+      // Tail (after last cut, if it didn't go to end)
+      if (cursor < 999990) keepSegs.push({ start: cursor, end: 999999 });
+
+      if (keepSegs.length === 0) {
+        alert("All segments would be removed — nothing left to export.");
+        cutBtn.disabled = false;
+        cutProgress.classList.remove("visible");
+        return;
+      }
+
+      // Build filter_complex with trim + concat
+      let filterV = "", filterA = "", mapInputs = "";
+      keepSegs.forEach((seg, i) => {
+        const endArg = seg.end > 99990 ? "" : `:end=${seg.end}`;
+        filterV += `[0:v]trim=start=${seg.start}${endArg},setpts=PTS-STARTPTS[v${i}];`;
+        filterA += `[0:a]atrim=start=${seg.start}${endArg},asetpts=PTS-STARTPTS[a${i}];`;
+        mapInputs += `[v${i}][a${i}]`;
+      });
+      const fc = filterV + filterA + `${mapInputs}concat=n=${keepSegs.length}:v=1:a=1[vout][aout]`;
+
+      cutBar.style.width = "20%";
+      cutLabel.textContent = `Cutting ${tocut.length} segment${tocut.length>1?"s":""}…`;
+
+      await ff.run(
+        "-i", inName,
+        "-filter_complex", fc,
+        "-map", "[vout]", "-map", "[aout]",
+        "-c:v", "libx264", "-crf", "18", "-preset", "fast",
+        "-c:a", "aac", "-b:a", "192k",
+        "-movflags", "+faststart", "-y", outName
+      );
+
+      const data = ff.FS("readFile", outName);
+      const blob = new Blob([data.buffer], { type: "video/mp4" });
+      const url  = URL.createObjectURL(blob);
+
+      const base = selectedFile.name.replace(/\.[^.]+$/, "");
+      downloadLink.href     = url;
+      downloadLink.download = base + "_cut.mp4";
+      const savedSec = tocut.reduce((s, c) => s + (c.end === 9999 ? 0 : c.end - c.start), 0);
+      doneTitle.textContent = "Done! Your video is ready.";
+      doneSub.textContent   = `Removed ${tocut.length} dead segment${tocut.length>1?"s":""} (${savedSec.toFixed(1)}s of dead air).`;
+
+      try { ff.FS("unlink", inName); ff.FS("unlink", outName); } catch(_) {}
+
+      cutProgress.classList.remove("visible");
+      stepReview.style.display = "none";
+      stepDone.style.display   = "block";
+
+      // Auto-trigger download
+      downloadLink.click();
+
+    } catch(err) {
+      cutLabel.textContent = "❌ Error: " + err.message;
+      cutBtn.disabled = false;
+    }
+  });
+
+  // ── Restart ───────────────────────────────────────────────────
+  document.getElementById("restart-btn").addEventListener("click", () => {
+    selectedFile  = null;
+    detectedSegs  = [];
+    segEnabled    = [];
+    fileInput.value = "";
+    filePillWrap.style.display = "none";
+    dzTitle.textContent = "Drop your gameplay video here";
+    dzSub.textContent   = "or click to choose · mp4, mov, avi, mkv";
+    scanBtn.disabled = true;
+    scanProgress.classList.remove("visible");
+    scanBar.style.width = "0%";
+    cutProgress.classList.remove("visible");
+    cutBar.style.width = "0%";
+    stepDone.style.display   = "none";
+    stepReview.style.display = "none";
+    stepPick.style.display   = "block";
+  });
+
+})();
+</script>
+
+</body>
+</html>
